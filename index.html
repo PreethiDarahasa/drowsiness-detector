@@ -1,0 +1,1510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Real-time driver drowsiness detection using AI-powered eye tracking. Monitors Eye Aspect Ratio (EAR) via webcam over a 30-second analysis window to alert drowsy drivers.">
+  <title>DrowsyGuard — Real-Time Drowsiness Detection</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    /* ========== BASE ========== */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: 'Rajdhani', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      overflow-x: hidden;
+    }
+
+    /* ========== HEADER ========== */
+    header {
+      width: 100%;
+      max-width: 1060px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px 12px;
+    }
+
+    .app-title {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      background: linear-gradient(90deg, #00f5ff, #00c8ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .app-title span {
+      font-weight: 400;
+      opacity: 0.6;
+      -webkit-text-fill-color: #e0e0e0;
+      font-size: 0.85rem;
+      letter-spacing: 1px;
+      margin-left: 10px;
+    }
+
+    #status-badge {
+      padding: 6px 18px;
+      border-radius: 20px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      background: #888;
+      color: #fff;
+      transition: background 0.3s, box-shadow 0.3s;
+      box-shadow: 0 0 12px rgba(0, 0, 0, 0.5);
+    }
+
+    /* ========== ERROR BANNER ========== */
+    #error-banner {
+      display: none;
+      width: 100%;
+      max-width: 1060px;
+      padding: 12px 24px;
+      background: #ff2d5522;
+      border: 1px solid #ff2d55;
+      border-radius: 6px;
+      color: #ff6b8a;
+      font-size: 0.95rem;
+      margin: 0 0 8px;
+      text-align: center;
+    }
+
+    /* ========== MAIN LAYOUT ========== */
+    main {
+      width: 100%;
+      max-width: 1060px;
+      display: flex;
+      gap: 20px;
+      padding: 12px 24px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* ========== VIDEO CONTAINER ========== */
+    .video-container {
+      position: relative;
+      width: 640px;
+      max-width: 100%;
+      aspect-ratio: 4 / 3;
+      border: 1px solid #00f5ff33;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #111118;
+      flex-shrink: 0;
+    }
+
+    .video-container video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .video-container canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    /* Loading overlay */
+    #loading-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0fdd;
+      z-index: 10;
+      gap: 16px;
+      transition: opacity 0.5s;
+    }
+
+    #loading-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .loader-ring {
+      width: 48px;
+      height: 48px;
+      border: 3px solid #00f5ff22;
+      border-top-color: #00f5ff;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loader-text {
+      font-size: 0.9rem;
+      color: #00f5ff99;
+      letter-spacing: 1px;
+    }
+
+    /* Alert ring */
+    .alert-ring {
+      position: absolute;
+      inset: 0;
+      border-radius: 6px;
+      border: 3px solid transparent;
+      pointer-events: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      z-index: 5;
+    }
+
+    .alert-ring.active {
+      border-color: #ff2d55;
+      box-shadow: 0 0 24px #ff2d5588, inset 0 0 24px #ff2d5522;
+      animation: pulse-ring 0.8s ease-in-out infinite;
+    }
+
+    @keyframes pulse-ring {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* ========== METRICS PANEL ========== */
+    .metrics-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 320px;
+      flex-shrink: 0;
+    }
+
+    .metrics-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .metric {
+      background: #12121a;
+      border: 1px solid #00f5ff22;
+      border-radius: 8px;
+      padding: 14px 12px;
+      text-align: center;
+      transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
+    }
+
+    .metric .value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #00f5ff;
+      line-height: 1;
+      margin-bottom: 4px;
+      transition: color 0.3s;
+    }
+
+    .metric .label {
+      font-size: 0.6rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #888;
+    }
+
+    .metric.wide {
+      grid-column: span 2;
+    }
+
+    .metric.danger {
+      background: #ff2d5518;
+      border-color: #ff2d55;
+      box-shadow: 0 0 16px #ff2d5522;
+    }
+
+    .metric.danger .value {
+      color: #ff2d55;
+    }
+
+    /* ========== ANALYSIS PROGRESS BAR ========== */
+    .analysis-section {
+      background: #12121a;
+      border: 1px solid #00f5ff22;
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .analysis-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .analysis-title {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #888;
+      font-weight: 600;
+    }
+
+    .analysis-timer {
+      font-size: 0.85rem;
+      color: #00f5ff;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    .progress-bar-track {
+      width: 100%;
+      height: 6px;
+      background: #1a1a2a;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #00f5ff, #00c8ff);
+      border-radius: 3px;
+      transition: width 0.3s;
+      box-shadow: 0 0 8px #00f5ff44;
+    }
+
+    .progress-bar-fill.full {
+      background: linear-gradient(90deg, #00c896, #00e8a0);
+      box-shadow: 0 0 8px #00c89644;
+    }
+
+    .progress-bar-fill.alert {
+      background: linear-gradient(90deg, #ff2d55, #ff6b8a);
+      box-shadow: 0 0 8px #ff2d5544;
+    }
+
+    /* ========== DROWSINESS SCORE GAUGE ========== */
+    .score-section {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .score-ring-container {
+      position: relative;
+      width: 60px;
+      height: 60px;
+      flex-shrink: 0;
+    }
+
+    .score-ring-container svg {
+      width: 100%;
+      height: 100%;
+      transform: rotate(-90deg);
+    }
+
+    .score-ring-bg {
+      fill: none;
+      stroke: #1a1a2a;
+      stroke-width: 5;
+    }
+
+    .score-ring-fill {
+      fill: none;
+      stroke: #00c896;
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-dasharray: 157;
+      stroke-dashoffset: 157;
+      transition: stroke-dashoffset 0.5s, stroke 0.3s;
+    }
+
+    .score-value-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #00c896;
+      transition: color 0.3s;
+    }
+
+    .score-details {
+      flex: 1;
+    }
+
+    .score-detail-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: #888;
+      padding: 2px 0;
+      border-bottom: 1px solid #ffffff06;
+    }
+
+    .score-detail-row .detail-val {
+      color: #ccc;
+      font-weight: 600;
+    }
+
+    .score-detail-row .detail-val.warn {
+      color: #ffaa33;
+    }
+
+    .score-detail-row .detail-val.danger {
+      color: #ff2d55;
+    }
+
+    /* ========== EAR GRAPH ========== */
+    .ear-graph-container {
+      width: 100%;
+      max-width: 1060px;
+      padding: 8px 24px 4px;
+    }
+
+    .ear-graph-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #555;
+      margin-bottom: 4px;
+    }
+
+    .ear-graph-wrapper {
+      width: 100%;
+      height: 80px;
+      background: #0e0e16;
+      border: 1px solid #00f5ff11;
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #ear-graph {
+      width: 100%;
+      height: 100%;
+    }
+
+    #ear-polyline {
+      fill: none;
+      stroke: #00f5ff;
+      stroke-width: 1.5;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+      filter: drop-shadow(0 0 4px #00f5ff44);
+    }
+
+    #threshold-line {
+      stroke: #ff2d55;
+      stroke-width: 1;
+      stroke-dasharray: 6, 4;
+      opacity: 0.7;
+    }
+
+    .graph-axis-label {
+      font-size: 9px;
+      fill: #555;
+      font-family: 'Rajdhani', sans-serif;
+    }
+
+    /* ========== MQTT PANEL ========== */
+    .mqtt-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #mqtt-connect-btn {
+      padding: 6px 16px;
+      border-radius: 20px;
+      border: 1px solid #00f5ff44;
+      background: #12121a;
+      color: #00f5ff;
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700;
+      font-size: 0.75rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    #mqtt-connect-btn:hover {
+      background: #00f5ff22;
+      box-shadow: 0 0 12px #00f5ff33;
+    }
+
+    #mqtt-connect-btn.connected {
+      border-color: #00c896;
+      color: #00c896;
+      background: #00c89611;
+    }
+
+    #mqtt-connect-btn.connected:hover {
+      background: #00c89622;
+      box-shadow: 0 0 12px #00c89633;
+    }
+
+    .mqtt-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #555;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+
+    .mqtt-dot.connected {
+      background: #00c896;
+      box-shadow: 0 0 8px #00c89688;
+      animation: dot-pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .mqtt-log-container {
+      width: 100%;
+      max-width: 1060px;
+      padding: 4px 24px 8px;
+    }
+
+    .mqtt-log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .mqtt-log-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #555;
+      margin-bottom: 4px;
+    }
+
+    #mqtt-log {
+      width: 100%;
+      height: 70px;
+      background: #0a0a12;
+      border: 1px solid #00f5ff11;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.7rem;
+      color: #00f5ff88;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    #mqtt-log .log-pub  { color: #00c896; }
+    #mqtt-log .log-sub  { color: #00f5ff; }
+    #mqtt-log .log-error { color: #ff2d55; }
+    #mqtt-log .log-info  { color: #ffaa33; }
+
+    /* ========== FOOTER / CONTROLS ========== */
+    footer {
+      width: 100%;
+      max-width: 1060px;
+      padding: 16px 24px 32px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      justify-content: center;
+    }
+
+    .control-group {
+      background: #12121a;
+      border: 1px solid #00f5ff11;
+      border-radius: 8px;
+      padding: 16px 20px;
+      min-width: 240px;
+      flex: 1;
+      max-width: 360px;
+    }
+
+    .control-group .control-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .control-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .control-row label {
+      font-size: 0.8rem;
+      color: #aaa;
+      white-space: nowrap;
+      min-width: 120px;
+    }
+
+    .control-row .control-val {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #00f5ff;
+      min-width: 36px;
+      text-align: right;
+    }
+
+    .control-row .control-unit {
+      font-size: 0.75rem;
+      color: #666;
+      min-width: 24px;
+    }
+
+    /* Range slider styling */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      flex: 1;
+      height: 4px;
+      background: #1e1e2e;
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      background: #00f5ff;
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 0 8px #00f5ff66;
+      transition: box-shadow 0.2s;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      box-shadow: 0 0 14px #00f5ffaa;
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      background: #00f5ff;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 0 8px #00f5ff66;
+    }
+
+    input[type="range"]::-moz-range-track {
+      background: #1e1e2e;
+      height: 4px;
+      border-radius: 2px;
+    }
+
+    /* MQTT config inputs */
+    .mqtt-input {
+      flex: 1;
+      padding: 5px 10px;
+      background: #0e0e16;
+      border: 1px solid #00f5ff22;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-family: 'Courier New', monospace;
+      font-size: 0.75rem;
+      outline: none;
+      transition: border-color 0.3s;
+    }
+
+    .mqtt-input:focus {
+      border-color: #00f5ff66;
+    }
+
+    /* Instructions text */
+    .instructions {
+      width: 100%;
+      text-align: center;
+      font-size: 0.75rem;
+      color: #555;
+      letter-spacing: 0.5px;
+      padding-top: 4px;
+      line-height: 1.6;
+    }
+
+    /* ========== RESPONSIVE ========== */
+    @media (max-width: 860px) {
+      main {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .metrics-panel {
+        width: 100%;
+        max-width: 640px;
+      }
+
+      header {
+        flex-direction: column;
+        gap: 10px;
+        text-align: center;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .metrics-row {
+        grid-template-columns: 1fr;
+      }
+
+      .metric.wide {
+        grid-column: span 1;
+      }
+
+      .control-row {
+        flex-wrap: wrap;
+      }
+
+      .score-section {
+        flex-direction: column;
+        text-align: center;
+      }
+    }
+
+    /* Scanline overlay for extra HUD feel */
+    .video-container::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 245, 255, 0.015) 2px,
+        rgba(0, 245, 255, 0.015) 4px
+      );
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    /* Subtle glow on the video border */
+    .video-container::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #00f5ff22, transparent 40%, transparent 60%, #00f5ff11);
+      z-index: -1;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== HEADER ===== -->
+  <header>
+    <h1 class="app-title">DrowsyGuard <span>// 30s Analysis Window</span></h1>
+    <div class="mqtt-controls">
+      <div class="mqtt-dot" id="mqtt-dot"></div>
+      <button id="mqtt-connect-btn" title="Connect to MQTT Broker">📡 Connect MQTT</button>
+      <div id="status-badge">INITIALIZING</div>
+    </div>
+  </header>
+
+  <!-- ===== ERROR BANNER ===== -->
+  <div id="error-banner"></div>
+
+  <!-- ===== MAIN ===== -->
+  <main>
+    <div class="video-container" id="video-container">
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="overlay-canvas"></canvas>
+      <div class="alert-ring" id="alert-ring"></div>
+      <div id="loading-overlay">
+        <div class="loader-ring"></div>
+        <div class="loader-text">Initializing Face Mesh…</div>
+      </div>
+    </div>
+
+    <div class="metrics-panel">
+      <!-- EAR Values -->
+      <div class="metrics-row">
+        <div class="metric" id="left-ear-card">
+          <div class="value" id="left-ear">—</div>
+          <div class="label">Left EAR</div>
+        </div>
+        <div class="metric" id="right-ear-card">
+          <div class="value" id="right-ear">—</div>
+          <div class="label">Right EAR</div>
+        </div>
+      </div>
+
+      <div class="metrics-row">
+        <div class="metric" id="blink-card">
+          <div class="value" id="blink-count">0</div>
+          <div class="label">Blinks</div>
+        </div>
+        <div class="metric" id="microsleep-card">
+          <div class="value" id="microsleep-count">0</div>
+          <div class="label">Microsleeps</div>
+        </div>
+      </div>
+
+      <!-- Analysis Progress -->
+      <div class="analysis-section" id="analysis-section">
+        <div class="analysis-header">
+          <span class="analysis-title">Analysis Window</span>
+          <span class="analysis-timer" id="analysis-timer">0s / 30s</span>
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progress-bar-fill"></div>
+        </div>
+
+        <!-- Drowsiness Score Gauge -->
+        <div class="score-section">
+          <div class="score-ring-container">
+            <svg viewBox="0 0 60 60">
+              <circle class="score-ring-bg" cx="30" cy="30" r="25"/>
+              <circle class="score-ring-fill" id="score-ring-fill" cx="30" cy="30" r="25"/>
+            </svg>
+            <div class="score-value-overlay" id="score-value">—</div>
+          </div>
+          <div class="score-details">
+            <div class="score-detail-row">
+              <span>Eyes Closed</span>
+              <span class="detail-val" id="detail-closed-pct">0%</span>
+            </div>
+            <div class="score-detail-row">
+              <span>Avg EAR</span>
+              <span class="detail-val" id="detail-avg-ear">—</span>
+            </div>
+            <div class="score-detail-row">
+              <span>Microsleeps</span>
+              <span class="detail-val" id="detail-microsleeps">0</span>
+            </div>
+            <div class="score-detail-row">
+              <span>Longest Close</span>
+              <span class="detail-val" id="detail-longest-close">0.0s</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status Card -->
+      <div class="metrics-row">
+        <div class="metric wide" id="status-card">
+          <div class="value" id="status-text">COLLECTING DATA…</div>
+          <div class="label">Driver Status</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== EAR GRAPH ===== -->
+  <div class="ear-graph-container">
+    <div class="ear-graph-label">EAR History — 30 Second Rolling Window</div>
+    <div class="ear-graph-wrapper">
+      <svg id="ear-graph" preserveAspectRatio="none" viewBox="0 0 600 80">
+        <!-- Grid lines -->
+        <line x1="0" y1="20" x2="600" y2="20" stroke="#ffffff08" stroke-width="0.5"/>
+        <line x1="0" y1="40" x2="600" y2="40" stroke="#ffffff08" stroke-width="0.5"/>
+        <line x1="0" y1="60" x2="600" y2="60" stroke="#ffffff08" stroke-width="0.5"/>
+        <!-- Axis labels -->
+        <text x="4" y="12" class="graph-axis-label">0.5</text>
+        <text x="4" y="44" class="graph-axis-label">0.25</text>
+        <text x="4" y="78" class="graph-axis-label">0.0</text>
+        <!-- Threshold line -->
+        <line id="threshold-line" x1="0" y1="40" x2="600" y2="40"/>
+        <!-- EAR polyline -->
+        <polyline id="ear-polyline" points=""/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ===== FOOTER / CONTROLS ===== -->
+  <footer>
+    <div class="control-group">
+      <div class="control-title">Detection Parameters</div>
+      <div class="control-row">
+        <label for="ear-threshold">EAR Threshold</label>
+        <input type="range" id="ear-threshold" min="0.15" max="0.35" step="0.01" value="0.25">
+        <span class="control-val" id="ear-threshold-val">0.25</span>
+      </div>
+      <div class="control-row">
+        <label for="analysis-window">Analysis Window</label>
+        <input type="range" id="analysis-window" min="10" max="60" step="5" value="30">
+        <span class="control-val" id="analysis-window-val">30</span>
+        <span class="control-unit">sec</span>
+      </div>
+      <div class="control-row">
+        <label for="drowsy-pct-thresh">Drowsy % Trigger</label>
+        <input type="range" id="drowsy-pct-thresh" min="10" max="60" step="5" value="30">
+        <span class="control-val" id="drowsy-pct-val">30</span>
+        <span class="control-unit">%</span>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <div class="control-title">MQTT Configuration</div>
+      <div class="control-row">
+        <label for="mqtt-broker">Broker URL</label>
+        <input type="text" id="mqtt-broker" class="mqtt-input" value="wss://broker.hivemq.com:8884/mqtt" placeholder="wss://broker.hivemq.com:8884/mqtt">
+      </div>
+      <div class="control-row">
+        <label for="mqtt-vehicle-id">Vehicle ID</label>
+        <input type="text" id="mqtt-vehicle-id" class="mqtt-input" value="AP09AB1234" placeholder="e.g. AP09AB1234" style="text-transform:uppercase">
+      </div>
+      <div class="instructions" style="padding-top: 8px;">
+        Must match ESP32 vehicle_id.<br>
+        Publishes → <strong style="color:#00f5ff;">vehicle/{ID}/drowsiness</strong> &nbsp;(DROWSY / AWAKE to ESP32)
+      </div>
+    </div>
+  </footer>
+
+  <!-- ===== MQTT LOG ===== -->
+  <div class="mqtt-log-container" id="mqtt-log-container" style="display:none;">
+    <div class="mqtt-log-header">
+      <span class="mqtt-log-label">MQTT Message Log</span>
+      <span class="mqtt-log-label" id="mqtt-broker-label"></span>
+    </div>
+    <div id="mqtt-log"></div>
+  </div>
+
+  <!-- ===== JAVASCRIPT ===== -->
+  <script>
+    // ──────────────────────────────────────────────
+    // 1. CONSTANTS & CONFIG
+    // ──────────────────────────────────────────────
+    let EAR_THRESHOLD = 0.25;
+    let ANALYSIS_WINDOW_SEC = 30;
+    let DROWSY_PCT_THRESHOLD = 30;
+
+    const LEFT_EYE  = [362, 385, 387, 263, 373, 380];
+    const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
+
+    // Timestamped EAR buffer
+    const EAR_BUFFER = [];
+
+    // Tracking state
+    let blinkCount = 0;
+    let microsleepCount = 0;
+    let currentCloseStart = null;
+    let longestCloseMs = 0;
+    let noFaceFrameCount = 0;
+    let canvasInitialized = false;
+    let audioCtx = null;
+    let analysisStartTime = null;
+    let lastDrowsyState = false;
+    let lastSentState = null;
+    let lastPublishTime = 0;           // rate-limit: timestamp of last MQTT publish
+    let publishCount = 0;              // total messages published (for debugging)
+    const MIN_PUBLISH_INTERVAL = 2000; // minimum 2 seconds between publishes
+
+    // MQTT state
+    let mqttClient = null;
+    let mqttConnected = false;
+
+    // GPS state (from browser Geolocation API)
+    let currentLat = null;
+    let currentLon = null;
+    let gpsWatchId = null;
+
+    // Graph data
+    const EAR_GRAPH_DATA = [];
+    const MAX_GRAPH_POINTS = 300;
+
+    // ──────────────────────────────────────────────
+    // 2. DOM REFERENCES
+    // ──────────────────────────────────────────────
+    const videoEl            = document.getElementById('webcam');
+    const canvasEl           = document.getElementById('overlay-canvas');
+    const alertRing          = document.getElementById('alert-ring');
+    const loadingOverlay     = document.getElementById('loading-overlay');
+    const statusBadge        = document.getElementById('status-badge');
+    const statusText         = document.getElementById('status-text');
+    const statusCard         = document.getElementById('status-card');
+    const leftEarEl          = document.getElementById('left-ear');
+    const rightEarEl         = document.getElementById('right-ear');
+    const blinkCountEl       = document.getElementById('blink-count');
+    const microsleepEl       = document.getElementById('microsleep-count');
+    const earPolyline        = document.getElementById('ear-polyline');
+    const thresholdLine      = document.getElementById('threshold-line');
+    const errorBanner        = document.getElementById('error-banner');
+    const progressBarFill    = document.getElementById('progress-bar-fill');
+    const analysisTimer      = document.getElementById('analysis-timer');
+    const scoreRingFill      = document.getElementById('score-ring-fill');
+    const scoreValueEl       = document.getElementById('score-value');
+    const detailClosedPct    = document.getElementById('detail-closed-pct');
+    const detailAvgEar       = document.getElementById('detail-avg-ear');
+    const detailMicrosleeps  = document.getElementById('detail-microsleeps');
+    const detailLongestClose = document.getElementById('detail-longest-close');
+
+    const ctx = canvasEl.getContext('2d');
+
+    // ──────────────────────────────────────────────
+    // 3. HELPER FUNCTIONS
+    // ──────────────────────────────────────────────
+    function euclidean(p1, p2) {
+      return Math.sqrt(
+        Math.pow(p1.x - p2.x, 2) +
+        Math.pow(p1.y - p2.y, 2)
+      );
+    }
+
+    function eyeAspectRatio(landmarks, eyeIndices) {
+      const p = eyeIndices.map(i => landmarks[i]);
+      const vertical1  = euclidean(p[1], p[5]);
+      const vertical2  = euclidean(p[2], p[4]);
+      const horizontal = euclidean(p[0], p[3]);
+      return (vertical1 + vertical2) / (2.0 * horizontal);
+    }
+
+    // ──────────────────────────────────────────────
+    // 4. DRAWING FUNCTIONS
+    // ──────────────────────────────────────────────
+    function drawLandmarks(landmarks, indices, color) {
+      ctx.fillStyle = color;
+      indices.forEach(i => {
+        const lm = landmarks[i];
+        ctx.beginPath();
+        ctx.arc(lm.x * canvasEl.width, lm.y * canvasEl.height, 2, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+    }
+
+    function drawEyeContour(landmarks, indices, color) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      indices.forEach((idx, i) => {
+        const lm = landmarks[idx];
+        const x = lm.x * canvasEl.width;
+        const y = lm.y * canvasEl.height;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    // ──────────────────────────────────────────────
+    // 5. 30-SECOND WINDOW ANALYSIS ENGINE
+    // ──────────────────────────────────────────────
+    function addEarReading(earAvg) {
+      const now = Date.now();
+      if (!analysisStartTime) analysisStartTime = now;
+
+      EAR_BUFFER.push({ time: now, ear: earAvg });
+      EAR_GRAPH_DATA.push(earAvg);
+      if (EAR_GRAPH_DATA.length > MAX_GRAPH_POINTS) EAR_GRAPH_DATA.shift();
+
+      const windowMs = ANALYSIS_WINDOW_SEC * 1000;
+      const cutoff = now - windowMs;
+      while (EAR_BUFFER.length > 0 && EAR_BUFFER[0].time < cutoff) {
+        EAR_BUFFER.shift();
+      }
+
+      const isEyesClosed = earAvg < EAR_THRESHOLD;
+      if (isEyesClosed) {
+        if (currentCloseStart === null) currentCloseStart = now;
+      } else {
+        if (currentCloseStart !== null) {
+          const closeDuration = now - currentCloseStart;
+          if (closeDuration < 500) blinkCount++;
+          if (closeDuration >= 1000) microsleepCount++;
+          if (closeDuration > longestCloseMs) longestCloseMs = closeDuration;
+          currentCloseStart = null;
+        }
+      }
+
+      if (currentCloseStart !== null) {
+        const ongoingClose = now - currentCloseStart;
+        if (ongoingClose > longestCloseMs) longestCloseMs = ongoingClose;
+      }
+
+      analyzeWindow(now);
+    }
+
+    function analyzeWindow(now) {
+      const windowMs = ANALYSIS_WINDOW_SEC * 1000;
+      const elapsed = now - analysisStartTime;
+      const windowFillPct = Math.min(100, (elapsed / windowMs) * 100);
+      const windowFillSec = Math.min(ANALYSIS_WINDOW_SEC, elapsed / 1000);
+      const isWindowFull = elapsed >= windowMs;
+
+      progressBarFill.style.width = windowFillPct + '%';
+      analysisTimer.textContent = windowFillSec.toFixed(0) + 's / ' + ANALYSIS_WINDOW_SEC + 's';
+
+      if (EAR_BUFFER.length < 10) {
+        updateStatus('COLLECTING');
+        updateScoreDisplay(0);
+        return;
+      }
+
+      const totalFrames = EAR_BUFFER.length;
+      const closedFrames = EAR_BUFFER.filter(r => r.ear < EAR_THRESHOLD).length;
+      const closedPct = (closedFrames / totalFrames) * 100;
+      const avgEar = EAR_BUFFER.reduce((sum, r) => sum + r.ear, 0) / totalFrames;
+
+      detailClosedPct.textContent = closedPct.toFixed(1) + '%';
+      detailClosedPct.className = 'detail-val' + (closedPct > DROWSY_PCT_THRESHOLD ? ' danger' : closedPct > DROWSY_PCT_THRESHOLD * 0.6 ? ' warn' : '');
+      detailAvgEar.textContent = avgEar.toFixed(3);
+      detailMicrosleeps.textContent = microsleepCount;
+      detailMicrosleeps.className = 'detail-val' + (microsleepCount >= 2 ? ' danger' : microsleepCount >= 1 ? ' warn' : '');
+      detailLongestClose.textContent = (longestCloseMs / 1000).toFixed(1) + 's';
+      detailLongestClose.className = 'detail-val' + (longestCloseMs >= 3000 ? ' danger' : longestCloseMs >= 1500 ? ' warn' : '');
+
+      if (!isWindowFull) {
+        updateStatus('ANALYZING');
+        progressBarFill.classList.remove('full', 'alert');
+        updateScoreDisplay(closedPct);
+        return;
+      }
+
+      const isDrowsy = closedPct >= DROWSY_PCT_THRESHOLD ||
+                       microsleepCount >= 3 ||
+                       longestCloseMs >= 4000;
+
+      progressBarFill.classList.add(isDrowsy ? 'alert' : 'full');
+      progressBarFill.classList.remove(isDrowsy ? 'full' : 'alert');
+      updateScoreDisplay(closedPct);
+
+      if (isDrowsy) {
+        updateStatus('DROWSY');
+      } else {
+        updateStatus('SAFE');
+      }
+    }
+
+    function updateScoreDisplay(closedPct) {
+      const score = Math.min(100, Math.max(0, closedPct));
+      const circumference = 157;
+      const offset = circumference - (score / 100) * circumference;
+      scoreRingFill.style.strokeDashoffset = offset;
+
+      let ringColor, textColor;
+      if (score < DROWSY_PCT_THRESHOLD * 0.5) {
+        ringColor = '#00c896'; textColor = '#00c896';
+      } else if (score < DROWSY_PCT_THRESHOLD) {
+        ringColor = '#ffaa33'; textColor = '#ffaa33';
+      } else {
+        ringColor = '#ff2d55'; textColor = '#ff2d55';
+      }
+
+      scoreRingFill.style.stroke = ringColor;
+      scoreValueEl.style.color = textColor;
+      scoreValueEl.textContent = score.toFixed(0) + '%';
+    }
+
+    // ──────────────────────────────────────────────
+    // 6. UI UPDATE FUNCTIONS
+    // ──────────────────────────────────────────────
+    function updateMetrics(leftEAR, rightEAR) {
+      leftEarEl.textContent     = leftEAR.toFixed(3);
+      rightEarEl.textContent    = rightEAR.toFixed(3);
+      blinkCountEl.textContent  = blinkCount;
+      microsleepEl.textContent  = microsleepCount;
+    }
+
+    function updateStatus(state) {
+      const displayText = (state === 'SAFE') ? 'MONITORING' : state;
+      statusBadge.textContent = displayText;
+      statusText.textContent  = displayText;
+
+      if (state === 'DROWSY') {
+        statusBadge.style.background = '#ff2d55';
+        statusBadge.style.boxShadow  = '0 0 16px #ff2d5588';
+        alertRing.classList.add('active');
+        statusCard.classList.add('danger');
+        if (!lastDrowsyState) playAlertSound();
+        publishToMQTT('DROWSY');       // → vehicle/drowsiness
+        lastDrowsyState = true;
+      } else if (state === 'SAFE') {
+        statusBadge.style.background = '#00c896';
+        statusBadge.style.boxShadow  = '0 0 12px #00c89644';
+        alertRing.classList.remove('active');
+        statusCard.classList.remove('danger');
+        if (lastDrowsyState) {
+          publishToMQTT('AWAKE');      // → vehicle/drowsiness (matches ESP32 callback)
+        }
+        lastDrowsyState = false;
+      } else if (state === 'ANALYZING') {
+        statusBadge.style.background = '#ffaa33';
+        statusBadge.style.boxShadow  = '0 0 10px #ffaa3344';
+        alertRing.classList.remove('active');
+        statusCard.classList.remove('danger');
+        lastDrowsyState = false;
+      } else {
+        statusBadge.style.background = '#555';
+        statusBadge.style.boxShadow  = 'none';
+        alertRing.classList.remove('active');
+        statusCard.classList.remove('danger');
+        lastDrowsyState = false;
+      }
+    }
+
+    function updateGraph() {
+      const W = 600, H = 80, maxEAR = 0.5;
+      const points = EAR_GRAPH_DATA.map((ear, i) => {
+        const x = (i / MAX_GRAPH_POINTS) * W;
+        const y = H - (ear / maxEAR) * H;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      earPolyline.setAttribute('points', points);
+      const threshY = H - (EAR_THRESHOLD / maxEAR) * H;
+      thresholdLine.setAttribute('y1', threshY);
+      thresholdLine.setAttribute('y2', threshY);
+    }
+
+    // ──────────────────────────────────────────────
+    // 7. AUDIO ALERT
+    // ──────────────────────────────────────────────
+    function playAlertSound() {
+      if (window._lastBeep && Date.now() - window._lastBeep < 2000) return;
+      window._lastBeep = Date.now();
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.3);
+    }
+
+    // ──────────────────────────────────────────────
+    // 8. MQTT — BROKER COMMUNICATION
+    // ──────────────────────────────────────────────
+    const mqttConnectBtn    = document.getElementById('mqtt-connect-btn');
+    const mqttDot           = document.getElementById('mqtt-dot');
+    const mqttLogEl         = document.getElementById('mqtt-log');
+    const mqttLogContainer  = document.getElementById('mqtt-log-container');
+    const mqttBrokerLabel   = document.getElementById('mqtt-broker-label');
+    const mqttBrokerInput   = document.getElementById('mqtt-broker');
+    const mqttTopicInput    = document.getElementById('mqtt-topic');
+
+    function mqttLog(msg, type = '') {
+      const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+      const line = document.createElement('div');
+      if (type) line.className = 'log-' + type;
+      line.textContent = `[${time}] ${msg}`;
+      mqttLogEl.appendChild(line);
+      mqttLogEl.scrollTop = mqttLogEl.scrollHeight;
+      // Keep log manageable
+      while (mqttLogEl.children.length > 100) mqttLogEl.removeChild(mqttLogEl.firstChild);
+    }
+
+    function getVehicleId() {
+      return document.getElementById('mqtt-vehicle-id').value.trim().toUpperCase() || 'UNKNOWN';
+    }
+
+    function getTopicPrefix() {
+      return 'vehicle/' + getVehicleId();
+    }
+
+    function connectMQTT() {
+      if (mqttConnected) {
+        disconnectMQTT();
+        return;
+      }
+
+      const brokerUrl = mqttBrokerInput.value.trim();
+      const clientId = 'drowsyguard_web_' + Math.random().toString(16).substring(2, 8);
+
+      mqttLog('Connecting to ' + brokerUrl + '...', 'info');
+      mqttLogContainer.style.display = 'block';
+
+      try {
+        mqttClient = mqtt.connect(brokerUrl, {
+          clientId: clientId,
+          clean: true,
+          connectTimeout: 10000,
+          reconnectPeriod: 5000,
+        });
+
+        mqttClient.on('connect', () => {
+          mqttConnected = true;
+          mqttConnectBtn.textContent = '📡 Connected';
+          mqttConnectBtn.classList.add('connected');
+          mqttDot.classList.add('connected');
+          mqttBrokerLabel.textContent = brokerUrl;
+          publishCount = 0;
+
+          const prefix = getTopicPrefix();
+          mqttLog('✓ Connected as ' + clientId, 'info');
+          mqttLog('Anti-spam: state-change guard + ' + MIN_PUBLISH_INTERVAL + 'ms rate limit active', 'info');
+
+          // Subscribe to ESP32 sensor data (vehicle/data)
+          const dataTopic = prefix + '/data';
+          mqttClient.subscribe(dataTopic, { qos: 1 }, (err) => {
+            if (!err) {
+              mqttLog('Subscribed to ' + dataTopic, 'sub');
+            } else {
+              mqttLog('Subscribe failed: ' + err.message, 'error');
+            }
+          });
+
+          mqttLog('Publishing drowsy state to ' + prefix + '/drowsiness', 'info');
+        });
+
+        mqttClient.on('message', (topic, message) => {
+          const msg = message.toString();
+          // Show ESP32 sensor data in log
+          try {
+            const data = JSON.parse(msg);
+            mqttLog('← ESP32: alc=' + data.alcohol + ' lat=' + data.lat + ' lon=' + data.lon + ' time=' + data.time, 'sub');
+          } catch {
+            mqttLog('← [' + topic + ']: ' + msg, 'sub');
+          }
+        });
+
+        mqttClient.on('error', (err) => {
+          mqttLog('Error: ' + err.message, 'error');
+        });
+
+        mqttClient.on('close', () => {
+          if (mqttConnected) {
+            mqttLog('Connection closed', 'info');
+            resetMQTTUI();
+          }
+        });
+
+        mqttClient.on('offline', () => {
+          mqttLog('Broker offline — will retry...', 'error');
+        });
+
+        mqttClient.on('reconnect', () => {
+          mqttLog('Reconnecting...', 'info');
+        });
+
+      } catch (err) {
+        mqttLog('Connection failed: ' + err.message, 'error');
+      }
+    }
+
+    function disconnectMQTT() {
+      if (mqttClient) {
+        const prefix = getTopicPrefix();
+        mqttClient.publish(prefix + '/alert', 'DISCONNECT');
+        mqttClient.end(true);
+        mqttClient = null;
+      }
+      resetMQTTUI();
+      mqttLog('Disconnected from broker', 'info');
+    }
+
+    function resetMQTTUI() {
+      mqttConnected = false;
+      mqttConnectBtn.textContent = '📡 Connect MQTT';
+      mqttConnectBtn.classList.remove('connected');
+      mqttDot.classList.remove('connected');
+      lastSentState = null;
+    }
+
+    // ── PUBLISH TO MQTT ──
+    // ANTI-SPAM PROTECTION (2 layers):
+    //   Layer 1: State-change guard — only publishes when state CHANGES (DROWSY↔SAFE)
+    //   Layer 2: Rate limiter — minimum 2 seconds between any two publishes
+    // This function is called from updateStatus() which runs every frame (~30fps)
+    // but these guards ensure only 1 message per state transition, max 1 per 2 seconds.
+    function publishToMQTT(state) {
+      // Guard 1: Must be connected
+      if (!mqttClient || !mqttConnected) return;
+
+      // Guard 2: Only publish on state CHANGE (prevents frame-by-frame spam)
+      if (state === lastSentState) return;
+
+      // Guard 3: Rate limit — minimum interval between publishes
+      const now = Date.now();
+      if (now - lastPublishTime < MIN_PUBLISH_INTERVAL) {
+        return; // Too soon, skip this publish
+      }
+
+      // ── All guards passed — safe to publish ──
+      lastSentState = state;
+      lastPublishTime = now;
+      publishCount++;
+
+      const vid = getVehicleId();
+      const topic = 'vehicle/' + vid + '/drowsiness';
+
+      // Send DROWSY/AWAKE to vehicle/{ID}/drowsiness (ESP32 reads this)
+      mqttClient.publish(topic, state, { qos: 1, retain: false });
+
+      mqttLog('→ [' + topic + '] ' + state + '  (#' + publishCount + ')', 'pub');
+    }
+
+    mqttConnectBtn.addEventListener('click', connectMQTT);
+
+    // ──────────────────────────────────────────────
+    // 9. EVENT LISTENERS (Sliders)
+    // ──────────────────────────────────────────────
+    document.getElementById('ear-threshold').addEventListener('input', e => {
+      EAR_THRESHOLD = parseFloat(e.target.value);
+      document.getElementById('ear-threshold-val').textContent = EAR_THRESHOLD.toFixed(2);
+      updateGraph();
+    });
+
+    document.getElementById('analysis-window').addEventListener('input', e => {
+      ANALYSIS_WINDOW_SEC = parseInt(e.target.value);
+      document.getElementById('analysis-window-val').textContent = ANALYSIS_WINDOW_SEC;
+      resetAnalysis();
+    });
+
+    document.getElementById('drowsy-pct-thresh').addEventListener('input', e => {
+      DROWSY_PCT_THRESHOLD = parseInt(e.target.value);
+      document.getElementById('drowsy-pct-val').textContent = DROWSY_PCT_THRESHOLD;
+    });
+
+    function resetAnalysis() {
+      EAR_BUFFER.length = 0;
+      blinkCount = 0;
+      microsleepCount = 0;
+      currentCloseStart = null;
+      longestCloseMs = 0;
+      analysisStartTime = null;
+      lastDrowsyState = false;
+      progressBarFill.style.width = '0%';
+      progressBarFill.classList.remove('full', 'alert');
+      updateStatus('COLLECTING');
+      scoreRingFill.style.strokeDashoffset = 157;
+      scoreValueEl.textContent = '—';
+      scoreValueEl.style.color = '#888';
+      detailClosedPct.textContent = '0%';
+      detailAvgEar.textContent = '—';
+      detailMicrosleeps.textContent = '0';
+      detailLongestClose.textContent = '0.0s';
+    }
+
+    // ──────────────────────────────────────────────
+    // 10. MEDIAPIPE SETUP
+    // ──────────────────────────────────────────────
+    const faceMesh = new FaceMesh({
+      locateFile: (file) =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    faceMesh.onResults(onResults);
+
+    function onResults(results) {
+      if (!canvasInitialized && videoEl.videoWidth > 0) {
+        canvasEl.width  = videoEl.videoWidth;
+        canvasEl.height = videoEl.videoHeight;
+        canvasInitialized = true;
+        loadingOverlay.classList.add('hidden');
+      }
+
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+
+      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        noFaceFrameCount++;
+        if (noFaceFrameCount > 30) updateStatus('NO FACE');
+        return;
+      }
+
+      noFaceFrameCount = 0;
+      const landmarks = results.multiFaceLandmarks[0];
+
+      drawEyeContour(landmarks, LEFT_EYE,  '#00f5ff');
+      drawEyeContour(landmarks, RIGHT_EYE, '#00f5ff');
+      drawLandmarks(landmarks, LEFT_EYE,  '#00f5ffaa');
+      drawLandmarks(landmarks, RIGHT_EYE, '#00f5ffaa');
+
+      const leftEAR  = eyeAspectRatio(landmarks, LEFT_EYE);
+      const rightEAR = eyeAspectRatio(landmarks, RIGHT_EYE);
+      const avgEAR   = (leftEAR + rightEAR) / 2.0;
+
+      updateMetrics(leftEAR, rightEAR);
+      addEarReading(avgEAR);
+      updateGraph();
+    }
+
+    // ──────────────────────────────────────────────
+    // 11. GPS TRACKING (Browser Geolocation API)
+    // ──────────────────────────────────────────────
+    function startGPSTracking() {
+      if (!('geolocation' in navigator)) return;
+
+      gpsWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          currentLat = parseFloat(pos.coords.latitude.toFixed(6));
+          currentLon = parseFloat(pos.coords.longitude.toFixed(6));
+        },
+        (err) => {
+          // GPS not available — silently continue without it
+          console.log('GPS unavailable:', err.message);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+      );
+    }
+
+    // ──────────────────────────────────────────────
+    // 12. CAMERA INIT & ENTRY POINT
+    // ──────────────────────────────────────────────
+    function showError(msg) {
+      errorBanner.textContent = msg;
+      errorBanner.style.display = 'block';
+      loadingOverlay.classList.add('hidden');
+    }
+
+    async function init() {
+      // GPS tracking disabled — ESP32 provides hardware GPS coordinates
+      // startGPSTracking();
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(t => t.stop());
+      } catch (err) {
+        showError('Camera access denied. Please allow camera permission and refresh the page.');
+        return;
+      }
+
+      try {
+        const camera = new Camera(videoEl, {
+          onFrame: async () => {
+            await faceMesh.send({ image: videoEl });
+          },
+          width: 640,
+          height: 480
+        });
+        camera.start();
+      } catch (err) {
+        showError('Failed to initialize camera. Please ensure your browser supports MediaPipe and try Chrome or Edge.');
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

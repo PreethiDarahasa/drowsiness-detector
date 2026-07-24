@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="DrowsyGuard — IoT Driver Safety Dashboard with real-time MQTT monitoring, alcohol tracking, GPS map, and multi-vehicle support.">
+  <title>DrowsyGuard — Driver Safety Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<div class="header">
+  <div class="logo">
+    <h1>🛡️ DrowsyGuard</h1>
+    <span>Driver Safety Dashboard</span>
+  </div>
+  <div class="header-controls">
+    <div class="stat-chip">🚗 Vehicles: <b id="stat-total">0</b></div>
+    <div class="stat-chip" style="color:var(--danger)">🚨 Danger: <b id="stat-danger" style="color:var(--danger)">0</b></div>
+    <div class="conn-status">
+      <div class="conn-dot" id="conn-dot"></div>
+      <span id="conn-label">Disconnected</span>
+    </div>
+    <button class="btn" id="btn-connect" onclick="toggleConnection()">Connect</button>
+    <button class="btn" onclick="injectDemo()" title="Inject sample vehicle data">🧪 Demo</button>
+    <label style="font-size:.72rem;color:#64748b;display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="checkbox" id="chk-live" checked style="accent-color:#06b6d4"> Live
+    </label>
+  </div>
+</div>
+
+<!-- ═══ MAIN ═══ -->
+<div class="main">
+
+  <!-- ALERT BANNER -->
+  <div class="alert-banner" id="alert-banner">
+    <span id="alert-icon">⚠️</span>
+    <span id="alert-text">Alert</span>
+  </div>
+
+  <!-- ═══ MAP SECTION — Vehicle List + Map + Alerts ═══ -->
+  <div class="section-label">Live Fleet Map</div>
+  <div class="map-section">
+    <!-- Vehicle List Panel -->
+    <div class="vehicle-panel">
+      <div class="vp-header">
+        <div class="vp-title">Active Vehicles</div>
+        <input type="text" class="vp-search" id="search-input" placeholder="🔍 Search vehicle..." oninput="renderVehicleList()">
+        <div class="vp-filters">
+          <button class="filter-btn active" onclick="setFilter('ALL',this)">All</button>
+          <button class="filter-btn f-safe" onclick="setFilter('SAFE',this)">Safe</button>
+          <button class="filter-btn f-warn" onclick="setFilter('WARNING',this)">Warn</button>
+          <button class="filter-btn f-danger" onclick="setFilter('DANGER',this)">Danger</button>
+        </div>
+      </div>
+      <div class="vp-list" id="vehicle-list">
+        <div class="vp-empty">No vehicles yet.<br>Connect to begin.</div>
+      </div>
+    </div>
+
+    <!-- Map -->
+    <div class="map-container">
+      <div id="map"></div>
+      <div class="map-stats">
+        <div class="map-stat">🟢 Safe: <b id="map-safe">0</b></div>
+        <div class="map-stat">🟡 Warn: <b id="map-warn">0</b></div>
+        <div class="map-stat">🔴 Danger: <b id="map-danger">0</b></div>
+      </div>
+    </div>
+
+    <!-- Alerts Panel -->
+    <div class="alerts-panel">
+      <div class="ap-title">⚡ Live Alerts</div>
+      <div class="ap-list" id="alerts-list">
+        <div class="vp-empty" style="font-size:.68rem">No alerts yet</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SELECTED VEHICLE DETAIL -->
+  <div class="selected-info" id="selected-info"></div>
+
+  <!-- REAL-TIME CARDS -->
+  <div class="section-label">Real-Time Monitoring</div>
+  <div class="cards">
+    <div class="card" id="card-vehicles">
+      <div class="card-header">
+        <span class="card-title">Active Vehicles</span>
+        <div class="card-icon">🚗</div>
+      </div>
+      <div class="card-value" id="val-vehicles">0</div>
+      <div class="card-sub" id="sub-vehicles">Waiting for data</div>
+    </div>
+    <div class="card" id="card-alcohol">
+      <div class="card-header">
+        <span class="card-title">Alcohol Level</span>
+        <div class="card-icon">🍺</div>
+      </div>
+      <div class="card-value" id="val-alcohol">—</div>
+      <div class="card-sub" id="sub-alcohol">Waiting for data</div>
+    </div>
+    <div class="card" id="card-drowsy">
+      <div class="card-header">
+        <span class="card-title">Driver Status</span>
+        <div class="card-icon">👁️</div>
+      </div>
+      <div class="card-value" id="val-drowsy">—</div>
+      <div class="card-sub" id="sub-drowsy">Waiting for data</div>
+    </div>
+    <div class="card" id="card-safety">
+      <div class="card-header">
+        <span class="card-title">Safety Status</span>
+        <div class="card-icon">🛡️</div>
+      </div>
+      <div class="card-value" id="val-safety">—</div>
+      <div class="card-sub" id="sub-safety">Waiting for data</div>
+    </div>
+    <div class="card" id="card-time">
+      <div class="card-header">
+        <span class="card-title">Last Update</span>
+        <div class="card-icon">🕐</div>
+      </div>
+      <div class="card-value" id="val-time" style="font-size:1.1rem">—</div>
+      <div class="card-sub" id="sub-time">No data received</div>
+    </div>
+  </div>
+
+  <!-- GPS LOCATION -->
+  <div class="section-label">GPS Location</div>
+  <div class="gps-card">
+    <div class="gps-info">
+      <span class="gps-icon">📍</span>
+      <div>
+        <div class="gps-label">Coordinates</div>
+        <div class="gps-value" id="gps-value">GPS data unavailable</div>
+      </div>
+    </div>
+    <button class="btn-location" id="btn-location" onclick="openMap()" disabled>
+      📍 View Location
+    </button>
+  </div>
+
+  <!-- ANALYTICS -->
+  <div class="section-label">Analytics</div>
+  <div class="analytics">
+    <!-- History Table -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📋 Data History</div>
+        <span class="badge" id="history-count">0 entries</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Vehicle</th><th>Alcohol</th><th>Drowsy</th><th>Status</th><th>Time</th></tr></thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ThingSpeak Chart -->
+    <div class="panel">
+      <div class="panel-title" style="margin-bottom:12px">📊 Alcohol vs Time (ThingSpeak)</div>
+      <div class="ts-controls">
+        <input type="text" class="ts-input" id="ts-channel" placeholder="Channel ID">
+        <input type="text" class="ts-input" id="ts-apikey" placeholder="Read API Key">
+        <button class="btn-fetch" onclick="fetchThingSpeak()">Fetch</button>
+      </div>
+      <div class="chart-area" id="chart-area">
+        <canvas id="ts-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- EVENT LOG -->
+  <div class="log-section">
+    <div class="section-label">Event Log</div>
+    <div class="log-box" id="log-box"></div>
+  </div>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>
